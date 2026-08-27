@@ -15,10 +15,22 @@ later requires no changes anywhere else in the app.
 """
 
 import os
+import re
 from app.models import Transaction
 from app.minimax_client import verify_intent_with_minimax
 
 USE_MINIMAX = os.getenv("USE_MINIMAX", "false").lower() == "true"
+
+
+def _mandated_max_amount(mandate: str) -> float | None:
+    match = re.search(
+        r"\b(?:up\s+to|max(?:imum)?(?:\s+amount)?|not\s+more\s+than)\s*\$?\s*([\d,]+(?:\.\d+)?)",
+        mandate,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return float(match.group(1).replace(",", ""))
 
 
 def verify_intent_mock(mandate: str, transaction: Transaction, recipient_check: bool) -> tuple[str, str]:
@@ -28,6 +40,8 @@ def verify_intent_mock(mandate: str, transaction: Transaction, recipient_check: 
 
     Logic:
       - If the recipient doesn't match the mandate's approved party,
+        that's a clear intent violation -> BLOCK.
+      - If the mandate states a maximum amount and the transaction exceeds it,
         that's a clear intent violation -> BLOCK.
       - If the stated reason contains language suggesting the agent was
         told to deviate from the mandate (classic prompt-injection
@@ -51,6 +65,13 @@ def verify_intent_mock(mandate: str, transaction: Transaction, recipient_check: 
         return (
             "BLOCK",
             "Recipient does not match the address approved in the human's mandate.",
+        )
+
+    mandated_max_amount = _mandated_max_amount(mandate)
+    if mandated_max_amount is not None and transaction.amount > mandated_max_amount:
+        return (
+            "BLOCK",
+            f"Transaction amount exceeds the ${mandated_max_amount:g} maximum in the human's mandate.",
         )
 
     if any(phrase in reason_lower for phrase in suspicious_phrases):
